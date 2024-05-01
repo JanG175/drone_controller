@@ -43,9 +43,9 @@
 
 #define ESPNOW_QUEUE_SIZE 6
 
-#define ESPNOW_SEND_COUNT 65535 // total count of unicast esp now data to be sent (1 - 65535)
+#define ESPNOW_SEND_COUNT 1000 // total count of unicast esp now data to be sent (1 - 65535)
 #define ESPNOW_SEND_DELAY 0 // delay between sending two esp now data [ms]
-#define ESPNOW_SEND_LEN   26 // length of esp now data to be sent [byte]
+#define ESPNOW_SEND_LEN   30 // length of esp now data to be sent [byte]
 
 typedef enum
 {
@@ -108,7 +108,7 @@ typedef struct
     uint16_t crc;                         // CRC16 value of esp now data
     uint32_t magic;                       // magic number which is used to determine which device to send unicast esp now data
 
-    float payload[4];                     // real payload of esp now data (height, roll, pitch, yaw)
+    float payload[5];                     // real payload of esp now data (height, roll, pitch, yaw)
 } __attribute__((packed)) espnow_data_t;
 
 typedef struct
@@ -117,6 +117,7 @@ typedef struct
     float roll_deg;
     float pitch_deg;
     float yaw_deg;
+    bool armed;
 } drone_telemetry_t;
 
 typedef struct
@@ -149,7 +150,7 @@ static void read_uart_input(espnow_data_t* espnow_data, drone_telemetry_t* drone
     uint32_t data_len = 1;
 
     // read from UART
-    uint32_t buf = uart_read_bytes(CONFIG_CONSOLE_UART_NUM, &data, data_len, 100 / portTICK_PERIOD_MS);
+    uint32_t buf = uart_read_bytes(CONFIG_CONSOLE_UART_NUM, &data, data_len, 50 / portTICK_PERIOD_MS);
 
     if (buf == data_len)
     {
@@ -179,6 +180,12 @@ static void read_uart_input(espnow_data_t* espnow_data, drone_telemetry_t* drone
             case 'l':
                 drone_telem->height_m -= D_M;
                 break;
+            case 'm':
+                drone_telem->armed = false;
+                break;
+            case 'n':
+                drone_telem->armed = true;
+                break;
             default:
                 break;
         }
@@ -187,6 +194,7 @@ static void read_uart_input(espnow_data_t* espnow_data, drone_telemetry_t* drone
         espnow_data->payload[1] = drone_telem->roll_deg;
         espnow_data->payload[2] = drone_telem->pitch_deg;
         espnow_data->payload[3] = drone_telem->yaw_deg;
+        espnow_data->payload[4] = (float)drone_telem->armed;
     }
 }
 
@@ -302,6 +310,8 @@ static void espnow_deinit(espnow_send_param_t* send_param, drone_telemetry_t* dr
 
     drone_telem = NULL;
     send_param = NULL;
+
+    esp_restart();
 }
 
 
@@ -334,7 +344,7 @@ uint8_t espnow_data_parse(uint8_t* data, uint16_t data_len, uint8_t* state, uint
 
     if (crc_cal == crc)
     {
-        for (uint32_t i = 0; i < 4; i++)
+        for (uint32_t i = 0; i < 5; i++)
             ESP_LOGI(TAG, "payload[%lu]: %f", i, buf->payload[i]);
         ESP_LOGI(TAG, "====================================");
 
@@ -580,6 +590,7 @@ static esp_err_t espnow_init()
     drone_telem->roll_deg = 0.0f;
     drone_telem->pitch_deg = 0.0f;
     drone_telem->yaw_deg = 0.0f;
+    drone_telem->armed = false;
 
     send_param = malloc(sizeof(espnow_send_param_t));
     if (send_param == NULL)

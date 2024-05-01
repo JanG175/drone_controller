@@ -1,4 +1,4 @@
-# ESP-IDF program to send user input from PC keyboard to drone via ESP NOW.
+# ESP-IDF program to send user input from PC keyboard to drone via ESP NOW
 
 # Notes
 * Auto peering implemented.
