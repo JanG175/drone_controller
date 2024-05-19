@@ -45,7 +45,7 @@
 
 #define ESPNOW_SEND_COUNT 1000 // total count of unicast esp now data to be sent (1 - 65535)
 #define ESPNOW_SEND_DELAY 0 // delay between sending two esp now data [ms]
-#define ESPNOW_SEND_LEN   30 // length of esp now data to be sent [byte]
+#define ESPNOW_SEND_LEN   (10 + 4 * sizeof(float) + 2 * sizeof(bool)) // length of esp now data to be sent [byte]
 
 typedef enum
 {
@@ -108,7 +108,9 @@ typedef struct
     uint16_t crc;                         // CRC16 value of esp now data
     uint32_t magic;                       // magic number which is used to determine which device to send unicast esp now data
 
-    float payload[5];                     // real payload of esp now data (height, roll, pitch, yaw)
+    float payload[4];                     // real payload of esp now data (height, roll, pitch, yaw)
+    bool arm_state;                       // indicate that if the drone is armed or not
+    bool keep_alive;                      // indicate that if the drone has a connection with the controller
 } __attribute__((packed)) espnow_data_t;
 
 typedef struct
@@ -117,7 +119,8 @@ typedef struct
     float roll_deg;
     float pitch_deg;
     float yaw_deg;
-    bool armed;
+    bool arm_state;
+    bool keep_alive;
 } drone_telemetry_t;
 
 typedef struct
@@ -181,21 +184,37 @@ static void read_uart_input(espnow_data_t* espnow_data, drone_telemetry_t* drone
                 drone_telem->height_m -= D_M;
                 break;
             case 'm':
-                drone_telem->armed = false;
+                drone_telem->arm_state = false;
                 break;
             case 'n':
-                drone_telem->armed = true;
+                drone_telem->arm_state = true;
                 break;
             default:
                 break;
         }
-
-        espnow_data->payload[0] = drone_telem->height_m;
-        espnow_data->payload[1] = drone_telem->roll_deg;
-        espnow_data->payload[2] = drone_telem->pitch_deg;
-        espnow_data->payload[3] = drone_telem->yaw_deg;
-        espnow_data->payload[4] = (float)drone_telem->armed;
     }
+    else
+    {
+        if (drone_telem->roll_deg > 0.0f)
+            drone_telem->roll_deg -= D_DEG;
+        else if (drone_telem->roll_deg < 0.0f)
+            drone_telem->roll_deg += D_DEG;
+
+        if (drone_telem->pitch_deg > 0.0f)
+            drone_telem->pitch_deg -= D_DEG;
+        else if (drone_telem->pitch_deg < 0.0f)
+            drone_telem->pitch_deg += D_DEG;
+    }
+    drone_telem->keep_alive = true;
+
+    espnow_data->payload[0] = drone_telem->height_m;
+    espnow_data->payload[1] = drone_telem->roll_deg;
+    espnow_data->payload[2] = drone_telem->pitch_deg;
+    espnow_data->payload[3] = drone_telem->yaw_deg;
+    espnow_data->arm_state = drone_telem->arm_state;
+    espnow_data->keep_alive = drone_telem->keep_alive;
+
+    ESP_LOGI(TAG, "height: %f, roll: %f, pitch: %f, yaw: %f, armed: %d", drone_telem->height_m, drone_telem->roll_deg, drone_telem->pitch_deg, drone_telem->yaw_deg, drone_telem->arm_state);
 }
 
 
@@ -344,9 +363,11 @@ uint8_t espnow_data_parse(uint8_t* data, uint16_t data_len, uint8_t* state, uint
 
     if (crc_cal == crc)
     {
-        for (uint32_t i = 0; i < 5; i++)
-            ESP_LOGI(TAG, "payload[%lu]: %f", i, buf->payload[i]);
-        ESP_LOGI(TAG, "====================================");
+        for (uint32_t i = 0; i < 4; i++)
+            ESP_LOGD(TAG, "payload[%lu]: %f", i, buf->payload[i]);
+        ESP_LOGD(TAG, "arm_state: %d", buf->arm_state);
+        ESP_LOGD(TAG, "keep_alive: %d", buf->keep_alive);
+        ESP_LOGD(TAG, "====================================");
 
         return buf->type;
     }
@@ -376,7 +397,7 @@ void espnow_data_prepare(espnow_send_param_t* send_param, drone_telemetry_t* dro
     buf->crc = 0;
     buf->magic = send_param->magic;
     // fill all remaining bytes after the data with random values
-    esp_fill_random(buf->payload, send_param->len - sizeof(espnow_data_t));
+    esp_fill_random(&buf->keep_alive, send_param->len - sizeof(espnow_data_t));
     buf->crc = esp_crc16_le(UINT16_MAX, (uint8_t const*)buf, send_param->len);
 }
 
@@ -416,7 +437,7 @@ static void espnow_task(void* pvParameter)
                 espnow_event_send_cb_t* send_cb = &evt.info.send_cb;
                 is_broadcast = IS_BROADCAST_ADDR(send_cb->mac_addr);
 
-                ESP_LOGD(TAG, "Send data to "MACSTR", status1: %d", MAC2STR(send_cb->mac_addr), send_cb->status);
+                ESP_LOGD(TAG, "Send data to "MACSTR", status: %d", MAC2STR(send_cb->mac_addr), send_cb->status);
 
                 if (is_broadcast && (send_param->broadcast == false))
                     break;
@@ -436,7 +457,7 @@ static void espnow_task(void* pvParameter)
                 if (send_param->delay > 0)
                     vTaskDelay(send_param->delay/portTICK_PERIOD_MS);
 
-                ESP_LOGI(TAG, "send data to "MACSTR"", MAC2STR(send_cb->mac_addr));
+                ESP_LOGD(TAG, "Send data to "MACSTR"", MAC2STR(send_cb->mac_addr));
 
                 memcpy(send_param->dest_mac, send_cb->mac_addr, ESP_NOW_ETH_ALEN);
                 espnow_data_prepare(send_param, drone_telem);
@@ -459,7 +480,7 @@ static void espnow_task(void* pvParameter)
 
                 if (ret == ESPNOW_DATA_BROADCAST)
                 {
-                    ESP_LOGI(TAG, "Receive %dth broadcast data from: "MACSTR", len: %d", recv_seq, MAC2STR(recv_cb->mac_addr), recv_cb->data_len);
+                    ESP_LOGD(TAG, "Receive %dth broadcast data from: "MACSTR", len: %d", recv_seq, MAC2STR(recv_cb->mac_addr), recv_cb->data_len);
 
                     // if MAC address does not exist in peer list, add it to peer list
                     if (esp_now_is_peer_exist(recv_cb->mac_addr) == false)
@@ -495,8 +516,8 @@ static void espnow_task(void* pvParameter)
                         // the device which has the bigger magic number sends ESPNOW data, the other one receives esp now data
                         if (send_param->unicast == false && send_param->magic >= recv_magic)
                         {
-                            ESP_LOGI(TAG, "Start sending unicast data");
-                            ESP_LOGI(TAG, "send data to "MACSTR"", MAC2STR(recv_cb->mac_addr));
+                            ESP_LOGD(TAG, "Start sending unicast data");
+                            ESP_LOGD(TAG, "send data to "MACSTR"", MAC2STR(recv_cb->mac_addr));
 
                             // start sending unicast ESPNOW data
                             memcpy(send_param->dest_mac, recv_cb->mac_addr, ESP_NOW_ETH_ALEN);
@@ -517,14 +538,14 @@ static void espnow_task(void* pvParameter)
                 }
                 else if (ret == ESPNOW_DATA_UNICAST)
                 {
-                    ESP_LOGI(TAG, "Receive %dth unicast data from: "MACSTR", len: %d", recv_seq, MAC2STR(recv_cb->mac_addr), recv_cb->data_len);
+                    ESP_LOGD(TAG, "Receive %dth unicast data from: "MACSTR", len: %d", recv_seq, MAC2STR(recv_cb->mac_addr), recv_cb->data_len);
 
                     // if receive unicast esp now data, also stop sending broadcast esp now data
                     send_param->broadcast = false;
                 }
                 else
                 {
-                    ESP_LOGI(TAG, "Receive error data from: "MACSTR"", MAC2STR(recv_cb->mac_addr));
+                    ESP_LOGD(TAG, "Receive error data from: "MACSTR"", MAC2STR(recv_cb->mac_addr));
                 }
                 break;
             }
@@ -582,7 +603,7 @@ static esp_err_t espnow_init()
     free(peer);
 
     vTaskDelay(5000 / portTICK_PERIOD_MS);
-    ESP_LOGI(TAG, "Start sending broadcast data");
+    ESP_LOGD(TAG, "Start sending broadcast data");
 
     // initialize sending parameters
     drone_telem = malloc(sizeof(drone_telemetry_t));
@@ -590,7 +611,8 @@ static esp_err_t espnow_init()
     drone_telem->roll_deg = 0.0f;
     drone_telem->pitch_deg = 0.0f;
     drone_telem->yaw_deg = 0.0f;
-    drone_telem->armed = false;
+    drone_telem->arm_state = false;
+    drone_telem->keep_alive = false;
 
     send_param = malloc(sizeof(espnow_send_param_t));
     if (send_param == NULL)
