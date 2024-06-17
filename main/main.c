@@ -41,7 +41,7 @@
 #define ESPNOW_PMK "pmk1234567890123"
 #define ESPNOW_LMK "lmk1234567890123"
 
-#define ESPNOW_MAXDELAY 512
+#define ESPNOW_MAXDELAY (1500 / portTICK_PERIOD_MS)
 
 static uint8_t s_broadcast_mac[ESP_NOW_ETH_ALEN] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 static uint8_t s_self_mac[ESP_NOW_ETH_ALEN];
@@ -226,7 +226,7 @@ static void espnow_task(void* arg)
     // send broadcast until a response from the drone
     while (1)
     {
-        ESP_LOGI(TAG, "Waiting for drone to peer...");
+        ESP_LOGW(TAG, "Waiting for drone to peer...");
         esp_now_send(s_broadcast_mac, (uint8_t*)&drone_telem, sizeof(drone_telemetry_t));
 
         if (xQueueReceive(queue, &drone_telem, ESPNOW_MAXDELAY) == pdTRUE)
@@ -235,7 +235,13 @@ static void espnow_task(void* arg)
             if (esp_now_is_peer_exist(drone_telem.mac) == false && IS_SELF_ADDR(drone_telem.mac) == false)
             {
                 ESP_LOGI(TAG, "Drone peer found!");
-                ESP_LOGI(TAG, "Drone MAC: %02X:%02X:%02X:%02X:%02X:%02X", drone_telem.mac[0], drone_telem.mac[1], drone_telem.mac[2], drone_telem.mac[3], drone_telem.mac[4], drone_telem.mac[5]);
+                ESP_LOGI(TAG, "Drone MAC: %02X:%02X:%02X:%02X:%02X:%02X", drone_telem.mac[0],
+                                                                          drone_telem.mac[1],
+                                                                          drone_telem.mac[2],
+                                                                          drone_telem.mac[3],
+                                                                          drone_telem.mac[4],
+                                                                          drone_telem.mac[5]);
+
                 break;
             }
         }
@@ -253,17 +259,30 @@ static void espnow_task(void* arg)
     memset(peer, 0, sizeof(esp_now_peer_info_t));
     peer->channel = ESPNOW_CHANNEL;
     peer->ifidx = ESPNOW_WIFI_IF;
-    peer->encrypt = false;
-    // peer->encrypt = true;
-    // memcpy(peer->lmk, ESPNOW_LMK, ESP_NOW_KEY_LEN);
+    peer->encrypt = true;
+    memcpy(peer->lmk, ESPNOW_LMK, ESP_NOW_KEY_LEN);
     memcpy(peer->peer_addr, drone_telem.mac, ESP_NOW_ETH_ALEN);
     ESP_ERROR_CHECK(esp_now_add_peer(peer));
 
     // start sending telemetry data
     while (1)
     {
+        // check if drone is still connected
+        if (xQueueReceive(queue, &drone_telem, ESPNOW_MAXDELAY) != pdTRUE)
+        {
+            ESP_LOGW(TAG, "Drone disconnected");
+
+            drone_telem.keep_alive = false;
+
+            esp_now_del_peer(peer->peer_addr);
+            xTaskCreate(espnow_task, "espnow_task", 4096, &drone_telem, 10, NULL);
+            break;
+        }
+
+        // read user input
         read_uart_input(&drone_telem);
 
+        // send telemetry data to drone
         esp_now_send(peer->peer_addr, (uint8_t*)&drone_telem, sizeof(drone_telemetry_t));
     }
 
@@ -325,7 +344,7 @@ static esp_err_t espnow_init(void)
     // get self MAC address
     esp_base_mac_addr_get(s_self_mac);
 
-    xTaskCreate(espnow_task, "espnow_task", 4096, &drone_telem, 4, NULL);
+    xTaskCreate(espnow_task, "espnow_task", 4096, &drone_telem, 10, NULL);
 
     return ESP_OK;
 }
