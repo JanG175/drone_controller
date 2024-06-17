@@ -2,7 +2,7 @@
 
 # Notes
 * Auto peering implemented.
-* No panic handler when one of the devices will reboot.
+* Currently no reading back any info from the drone.
 
 ## Sources
 * https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/network/esp_now.html
