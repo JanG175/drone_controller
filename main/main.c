@@ -1,3 +1,11 @@
+/**
+ * @file main.c
+ * @author JanG175
+ * @brief ESP-IDF component for ESP-NOW drone controller
+ * 
+ * @copyright Apache 2.0
+*/
+
 #include <stdio.h>
 #include <string.h>
 #include "freertos/FreeRTOS.h"
@@ -245,8 +253,9 @@ static void espnow_task(void* arg)
     memset(peer, 0, sizeof(esp_now_peer_info_t));
     peer->channel = ESPNOW_CHANNEL;
     peer->ifidx = ESPNOW_WIFI_IF;
-    peer->encrypt = true;
-    memcpy(peer->lmk, ESPNOW_LMK, ESP_NOW_KEY_LEN);
+    peer->encrypt = false;
+    // peer->encrypt = true;
+    // memcpy(peer->lmk, ESPNOW_LMK, ESP_NOW_KEY_LEN);
     memcpy(peer->peer_addr, drone_telem.mac, ESP_NOW_ETH_ALEN);
     ESP_ERROR_CHECK(esp_now_add_peer(peer));
 
